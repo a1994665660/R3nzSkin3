@@ -129,6 +129,75 @@ bool WINAPI Injector::inject(const std::uint32_t pid) noexcept
 	return true;
 }
 
+namespace {
+	struct EnumWindowsData {
+		std::uint32_t target_pid{ 0 };
+		DWORD window_thread_id{ 0 };
+	};
+
+	BOOL CALLBACK enumWindowsProc(HWND hwnd, LPARAM lParam) noexcept
+	{
+		auto* data{ reinterpret_cast<EnumWindowsData*>(lParam) };
+		DWORD pid{ 0 };
+		if (LI_FN(GetWindowThreadProcessId).get()(hwnd, &pid) != 0 && pid == data->target_pid) {
+			if (LI_FN(IsWindowVisible).get()(hwnd)) {
+				data->window_thread_id = LI_FN(GetWindowThreadProcessId).get()(hwnd, nullptr);
+				return FALSE;
+			}
+		}
+		return TRUE;
+	}
+}
+
+bool WINAPI Injector::injectByHook(const std::uint32_t pid) noexcept
+{
+	TCHAR current_dir[MAX_PATH];
+	LI_FN(GetCurrentDirectoryW)(MAX_PATH, current_dir);
+	const auto dll_path{ std::wstring(current_dir) + _XorStrW(L"\\R3nzSkin.dll") };
+
+	if (const auto f{ std::ifstream(dll_path) }; !f.is_open()) {
+		LI_FN(MessageBoxW)(nullptr, _XorStrW(L"R3nzSkin.dll file could not be found.\nTry reinstalling the cheat."), _XorStrW(L"R3nzSkin"), MB_ICONERROR | MB_OK);
+		return false;
+	}
+
+	const auto hModule{ LI_FN(LoadLibraryW).get()(dll_path.c_str()) };
+	if (!hModule) {
+		LI_FN(MessageBoxW)(nullptr, _XorStrW(L"Failed to load R3nzSkin.dll into injector process."), _XorStrW(L"R3nzSkin"), MB_ICONERROR | MB_OK);
+		return false;
+	}
+
+	const auto hookProc{ reinterpret_cast<HOOKPROC>(LI_FN(GetProcAddress).get()(hModule, _XorStr("GetMsgProc"))) };
+	if (!hookProc) {
+		LI_FN(MessageBoxW)(nullptr, _XorStrW(L"Failed to locate GetMsgProc export in R3nzSkin.dll."), _XorStrW(L"R3nzSkin"), MB_ICONERROR | MB_OK);
+		LI_FN(FreeLibrary).get()(hModule);
+		return false;
+	}
+
+	EnumWindowsData data{};
+	data.target_pid = pid;
+	LI_FN(EnumWindows).get()(enumWindowsProc, reinterpret_cast<LPARAM>(&data));
+
+	if (data.window_thread_id == 0) {
+		LI_FN(FreeLibrary).get()(hModule);
+		return false;
+	}
+
+	const auto hHook{ LI_FN(SetWindowsHookExW).get()(WH_GETMESSAGE, hookProc, hModule, data.window_thread_id) };
+	if (!hHook) {
+		LI_FN(FreeLibrary).get()(hModule);
+		return false;
+	}
+
+	LI_FN(PostThreadMessageW).get()(data.window_thread_id, WM_NULL, 0, 0);
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+	LI_FN(UnhookWindowsHookEx).get()(hHook);
+	LI_FN(FreeLibrary).get()(hModule);
+
+	return Injector::isInjected(pid);
+}
+
 void WINAPI Injector::enableDebugPrivilege() noexcept
 {
 	HANDLE token{};
@@ -255,7 +324,12 @@ void Injector::run() noexcept
 				R3nzSkinInjector::cheatState = false;
 				if (R3nzSkinInjector::btnState) {
 					std::this_thread::sleep_for(1.5s);
-					if (Injector::inject(pid))
+#ifdef _RIOT
+					const auto injected{ Injector::inject(pid) };
+#else
+					const auto injected{ Injector::injectByHook(pid) };
+#endif
+					if (injected)
 						R3nzSkinInjector::cheatState = true;
 					else
 						R3nzSkinInjector::cheatState = false;

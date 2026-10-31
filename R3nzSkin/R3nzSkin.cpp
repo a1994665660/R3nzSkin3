@@ -81,3 +81,8 @@ __declspec(safebuffers) BOOL APIENTRY DllMain(const HMODULE hModule, const DWORD
 	::CloseHandle(hModule);
 	return TRUE;
 }
+
+extern "C" __declspec(dllexport) LRESULT CALLBACK GetMsgProc(const int code, const WPARAM wParam, const LPARAM lParam) noexcept
+{
+	return ::CallNextHookEx(nullptr, code, wParam, lParam);
+}
